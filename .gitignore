@@ -1,0 +1,50 @@
+# ============================================================
+# Quartus II 工程 .gitignore
+# 原则：只提交「源文件 + 工程定义文件」，忽略一切可重新生成的产物
+# ============================================================
+
+# ---- Quartus 生成/编译目录 ----
+db/
+incremental_db/
+output_files/
+simulation/
+sopc_builder/
+
+# ---- 编译/仿真中间产物 ----
+*.qws
+*.qdf
+*.qarlog
+*.done
+*.summary
+*.smsg
+*.rpt
+*.jdi
+*.sld
+*.pin
+*.sof
+*.pof
+*.jic
+*.cdf
+*.rbf
+*.ekp
+*.dpf
+*.psf
+*.qar
+*.bak
+*.orig
+*.cmp
+
+# ---- IP 核生成时的临时目录（greybox_tmp 不要提交）----
+**/greybox_tmp/
+**/_sim/
+
+# ---- ModelSim 仿真库 ----
+simulation/modelsim/
+*.wlf
+*.vcd
+transcript
+
+# ---- 操作系统垃圾文件 ----
+Thumbs.db
+Desktop.ini
+.DS_Store
