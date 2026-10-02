@@ -34,6 +34,9 @@ sopc_builder/
 *.orig
 *.cmp
 
+# ---- Quartus 生成的其他临时信息文件 ----
+PLLJ_PLLSPE_INFO.txt
+
 # ---- IP 核生成时的临时目录（greybox_tmp 不要提交）----
 **/greybox_tmp/
 **/_sim/
