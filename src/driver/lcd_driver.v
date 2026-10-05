@@ -9,7 +9,7 @@ module lcd_driver (
     // ---- 输入 ----
     input  wire        clk,          // 30MHz 像素时钟（PLL 提供）
     input  wire        rst_n,        // 异步复位，低有效
-    input  wire [23:0] pixel_data,   // displayer 送来的像素 RGB888
+    input  wire [15:0] pixel_data,   // displayer 送来的像素 RGB565
 
     // ---- 输出给屏幕 ----
     output wire        lcd_clk,      // 像素时钟（直通 clk）
@@ -33,8 +33,8 @@ localparam H_ACTIVE = 800;   // 水平有效区
 localparam H_FP     = 48;    // 水平前肩
 localparam H_TOTAL  = H_SYNC + H_BP + H_ACTIVE + H_FP;  // 928
 
-localparam V_SYNC   = 0;     // 垂直同步脉宽（手册推算为 0 行）
-localparam V_BP     = 32;    // 垂直后肩
+localparam V_SYNC   = 2;     // 垂直同步脉宽（原 0，面板需非零 VSYNC 才能同步）
+localparam V_BP     = 30;    // 垂直后肩
 localparam V_ACTIVE = 480;   // 垂直有效区
 localparam V_FP     = 13;    // 垂直前肩
 localparam V_TOTAL  = V_SYNC + V_BP + V_ACTIVE + V_FP;  // 525
@@ -94,6 +94,15 @@ assign pixel_x     = x_comb;
 assign pixel_y     = y_comb;
 assign pixel_valid = active;
 
+// active 延迟 1 拍（对齐 line_buffer 的注册读延迟）
+reg active_d1;
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n)
+        active_d1 <= 1'b0;
+    else
+        active_d1 <= active;
+end
+
 // ============ 时序块 2：输出（统一寄存，保证 DE 与 RGB 对齐）============
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -105,15 +114,14 @@ always @(posedge clk or negedge rst_n) begin
         lcd_rgb <= 16'd0;
     end
     else begin
-        lcd_hs  <= (h_cnt < H_SYNC);
-        lcd_vs  <= (v_cnt < V_SYNC);   // V_SYNC=0 → 恒为低
+        lcd_hs  <= 1'b1;               // DE 模式：HSYNC 拉高
+        lcd_vs  <= 1'b1;               // DE 模式：VSYNC 拉高
         lcd_bl  <= 1'b1;               // 背光常开
         lcd_rst <= flag;               // 1ms 延时期间拉低复位，之后释放
 
-        if (active) begin              // 有效区：读像素数据并输出，拉高 DE
-            lcd_de <= 1'b1;
-            // 24位 RGB888 → 16位 RGB565：R 高5位、G 高6位、B 高5位
-            lcd_rgb <= {pixel_data[23:19], pixel_data[15:10], pixel_data[7:3]};
+        if (active_d1) begin           // 有效区（延迟1拍对齐line_buffer）：输出，拉高 DE
+            lcd_de  <= 1'b1;
+            lcd_rgb <= pixel_data;     // 已是 RGB565，直接输出
         end
         else begin                     // 消隐区：DE 拉低，输出 0
             lcd_de  <= 1'b0;
