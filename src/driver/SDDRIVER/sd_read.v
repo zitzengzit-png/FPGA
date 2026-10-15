@@ -1,19 +1,18 @@
 // ============================================================
-// 模块：sd_read —— SD 卡读数据模块（按正点原子教程第52章，内部分频适配）
+// 模块：sd_read —— SD 卡读数据模块（正点原子教程第52章原版）
 // 功能：发送 CMD17 读单块，接收 512 字节（256 个 16 位数据）
-// 时序：检测 MISO 起始位收 R1，检测数据头 0xFE，收 256×16bit
-// 适配说明：教程原版用外部 clk_ref_180deg(50MHz)采样，本版改为内部分频
-//           6.25MHz（div_clk + div_clk_180deg），只需 clk_ref(50MHz) 一个时钟
+// 时钟：clk_ref(50MHz) 发送/控制，clk_ref_180deg(50MHz 反相) 采样
+//       两者相位差 180 度，SD 卡时钟 = clk_ref_180deg（50MHz）
 // ============================================================
 `timescale 1ns / 1ps
 
 module sd_read(
     input                clk_ref      ,  // 时钟 50MHz
+    input                clk_ref_180deg, // 时钟 50MHz 反相（与 clk_ref 相差 180 度）
     input                rst_n        ,  // 复位，低有效
     input                sd_miso      ,  // SD 卡 SPI 输入
     output  reg          sd_cs        ,  // SD 卡片选
     output  reg          sd_mosi      ,  // SD 卡 SPI 输出
-    output  wire         sd_clk       ,  // SD 卡时钟（内部分频，供顶层切换）
     input                rd_start_en  ,  // 开始读 SD 卡数据
     input        [31:0]  rd_sec_addr  ,  // 读数据扇区地址
     output  reg          rd_busy      ,  // 读数据忙信号
@@ -21,14 +20,7 @@ module sd_read(
     output  reg  [15:0]  rd_val_data     // 读数据（16 位）
 );
 
-// 分频参数：50MHz/8 = 6.25MHz（初始化后快时钟）
-parameter DIV_FREQ = 8;
-
 // ============ 寄存器 ============
-reg [3:0]  div_cnt;
-reg        div_clk;
-wire       div_clk_180deg = ~div_clk;
-
 reg        rd_en_d0;
 reg        rd_en_d1;
 reg        res_en;
@@ -50,24 +42,6 @@ reg        rd_data_flag;
 
 wire       pos_rd_en;
 
-// ============ 分频 ============
-assign sd_clk = ~div_clk;
-
-always @(posedge clk_ref or negedge rst_n) begin
-    if(!rst_n) begin
-        div_clk <= 1'b0;
-        div_cnt <= 4'd0;
-    end
-    else begin
-        if(div_cnt == DIV_FREQ/2-1'b1) begin
-            div_clk <= ~div_clk;
-            div_cnt <= 4'd0;
-        end
-        else
-            div_cnt <= div_cnt + 4'd1;
-    end
-end
-
 // ============ rd_start_en 上升沿检测 ============
 assign pos_rd_en = (~rd_en_d1) & rd_en_d0;
 
@@ -82,8 +56,9 @@ always @(posedge clk_ref or negedge rst_n) begin
     end
 end
 
-// ============ 接收响应数据（div_clk_180deg 上升沿采样）============
-always @(posedge div_clk_180deg or negedge rst_n) begin
+
+// ============ 接收响应数据（clk_ref_180deg 上升沿采样）============
+always @(posedge clk_ref_180deg or negedge rst_n) begin
     if(!rst_n) begin
         res_en      <= 1'b0;
         res_data    <= 8'd0;
@@ -112,8 +87,8 @@ always @(posedge div_clk_180deg or negedge rst_n) begin
     end
 end
 
-// ============ 接收有效数据（div_clk_180deg 上升沿采样）============
-always @(posedge div_clk_180deg or negedge rst_n) begin
+// ============ 接收有效数据（clk_ref_180deg 上升沿采样）============
+always @(posedge clk_ref_180deg or negedge rst_n) begin
     if(!rst_n) begin
         rx_en_t      <= 1'b0;
         rx_data_t    <= 16'd0;

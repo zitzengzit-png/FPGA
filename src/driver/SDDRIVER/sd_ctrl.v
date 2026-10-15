@@ -23,9 +23,11 @@ module sd_ctrl (
 // ---- sd_init / sd_read 输出线 ----
 wire        init_done;
 wire        init_sd_clk, init_sd_cs, init_sd_mosi;
-wire        rd_sd_clk, rd_sd_cs, rd_sd_mosi;
+wire        rd_sd_cs, rd_sd_mosi;
 wire        rd_busy, rd_val_en;
 wire [15:0] rd_val_data;
+// 50MHz 反相时钟（教程的 clk_ref_180deg，用于 sd_read 采样 + 读数据时钟）
+wire        clk_180 = ~clk;
 
 // ---- SD 卡初始化（教程第52章 sd_init，内部 250kHz 分频）----
 sd_init u_sd_init (
@@ -40,23 +42,23 @@ sd_init u_sd_init (
 
 // ---- SD 卡读数据（教程第52章 sd_read，内部 6.25MHz 分频）----
 sd_read u_sd_read (
-    .clk_ref      (clk),
-    .rst_n        (rst_n),
-    .sd_miso      (sd_miso),
-    .sd_cs        (rd_sd_cs),
-    .sd_mosi      (rd_sd_mosi),
-    .sd_clk       (rd_sd_clk),
-    .rd_start_en  (sd_rd & init_done),  // 初始化完成后才响应读请求
-    .rd_sec_addr  (sd_addr),
-    .rd_busy      (rd_busy),
-    .rd_val_en    (rd_val_en),
-    .rd_val_data  (rd_val_data)
+    .clk_ref       (clk),
+    .clk_ref_180deg(clk_180),           // 50MHz 反相
+    .rst_n         (rst_n),
+    .sd_miso       (sd_miso),
+    .sd_cs         (rd_sd_cs),
+    .sd_mosi       (rd_sd_mosi),
+    .rd_start_en   (sd_rd & init_done), // 初始化完成后才响应读请求
+    .rd_sec_addr   (sd_addr),
+    .rd_busy       (rd_busy),
+    .rd_val_en     (rd_val_en),
+    .rd_val_data   (rd_val_data)
 );
 
 // ---- 引脚仲裁：初始化时 sd_init 驱动，初始化后 sd_read 驱动 ----
 assign sd_cs   = init_done ? rd_sd_cs   : init_sd_cs;
 assign sd_mosi = init_done ? rd_sd_mosi : init_sd_mosi;
-assign sd_clk  = init_done ? rd_sd_clk  : init_sd_clk;
+assign sd_clk  = init_done ? clk_180    : init_sd_clk;
 
 // ---- 忙：初始化中 或 读数据中 ----
 assign sd_busy = !init_done || rd_busy;
