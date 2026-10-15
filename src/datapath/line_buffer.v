@@ -138,8 +138,12 @@ always @(posedge clk_30m or negedge rst_n) begin
             end
         end
         else begin
-            // 等待：行起始且 FIFO 已有一整行（720 字）
-            if (line_start && rdusedw >= 11'd720)
+            // 行开始后持续等待 FIFO 攒满一整行再弹。
+            // 【修复】原来写成 if(line_start && rdusedw>=720)，line_start 只高 1 拍，
+            // 若该拍 FIFO 还没攒够 720 字，这一行就被跳过（黑边），导致画面逐帧
+            // 下移、滚动。改成只等 rdusedw>=720，行开始后任意时刻攒够就立即弹，
+            // 行不再被跳过。
+            if (rdusedw >= 11'd720)
                 line_active <= 1'b1;
         end
     end
