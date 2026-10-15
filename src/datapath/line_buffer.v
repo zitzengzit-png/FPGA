@@ -34,7 +34,8 @@ wire        wrfull;    // 写满标志（未用；防溢出改用 wrusedw 判断
 wire [10:0] wrusedw;   // 写侧已用字数：判断 fifo_room，防止 FIFO 写溢出
 // ---- 读侧（30MHz 显示域）----
 wire [15:0] q;         // 读出的像素数据（16bit RGB565）
-wire        rdempty;   // 读空标志（未用）
+wire        rdempty;   // 读空标志（清空 FIFO 时判断读空完成）
+reg         clearing;  // FIFO 清空标志：复位后读空残留数据（FIFO IP 无 aclr）
 wire [10:0] rdusedw;   // 读侧已用字数：判断整行 720 字是否就绪
 
 // ============ 双时钟 FIFO（IP 核，深度 2048 × 16bit）============
@@ -49,7 +50,7 @@ FIFO u_fifo (
     .wrempty (),            // 写空标志：未连接
     // ---- 读侧（30MHz 显示域）----
     .rdclk   (clk_30m),     // 读时钟：30MHz
-    .rdreq   (pop),         // 读请求：显示侧弹出像素
+    .rdreq   (pop || clearing), // 读请求：显示弹出 或 复位后清空残留数据
     .q       (q),           // 读出的数据（rdreq 后 1 拍生效，注意对齐）
     .rdempty (rdempty),     // 读空标志（未用）
     .rdfull  (),            // 读满标志：未连接
@@ -120,6 +121,16 @@ end
 reg        line_active;   // 当前行数据就绪，正在弹出
 reg [9:0]  pop_cnt;       // 当前行已弹出字数 0~719
 reg        frame_synced;  // 帧同步标志：已对齐到显示侧的 pixel_y=0
+
+// 复位后清空 FIFO：FIFO IP 没有 aclr（清零）端口，复位时读写指针不清零，
+// 会残留上一次的数据导致读写错位（表现为每次复位图像偏移不一样）。
+// 这里用软件方式：复位后读侧持续 rdreq 把 FIFO 读空，等 rdempty 拉高后结束清空。
+always @(posedge clk_30m or negedge rst_n) begin
+    if (!rst_n)
+        clearing <= 1'b1;
+    else if (clearing && rdempty)
+        clearing <= 1'b0;
+end
 
 always @(posedge clk_30m or negedge rst_n) begin
     if (!rst_n) begin
