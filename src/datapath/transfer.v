@@ -89,12 +89,15 @@ always @(posedge clk or negedge rst_n) begin
                 end
             end
 
-            // ---- 请求一个扇区 ----
+            // ---- 请求一个扇区（等 sd_read 空闲再发读请求）----
             S_REQ: begin
-                sd_addr  <= cur_sector;
-                sd_rd    <= 1'b1;
-                byte_cnt <= 10'd0;
-                state    <= S_COLL;
+                if (!sd_busy) begin
+                    sd_addr  <= cur_sector;
+                    sd_rd    <= 1'b1;
+                    byte_cnt <= 10'd0;
+                    state    <= S_COLL;
+                end
+                // sd_busy=1（sd_read 忙）时保持等待
             end
 
             // ---- 收集字节、打包写 ----
