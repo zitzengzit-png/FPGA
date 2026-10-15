@@ -71,20 +71,20 @@ wire        tr_sdr_wr;    // transfer 写请求
 wire [15:0] tr_sdr_wdata; // transfer 写数据
 wire        transfer_done;// transfer 完成
 reg         transfer_active; // 写阶段标志
-reg  [19:0] start_cnt;    // 启动延时计数
+reg  [22:0] start_cnt;    // 启动延时计数（23 位可存 500 万，够 100ms）
 reg         start;        // transfer 启动脉冲（单拍）
 
 // PLL 锁定 + 外部复位：两者都满足才释放内部复位
 assign rst_n_int = sys_rst_n & pll_locked;
 
-// ---- 上电延时 10ms 后启动 transfer（等 PLL + SDRAM + SD 初始化）----
+// ---- 上电延时 100ms 后启动 transfer（等 sd_init 约 20ms 完成初始化）----
 always @(posedge sys_clk or negedge rst_n_int) begin
     if (!rst_n_int) begin
-        start_cnt <= 20'd0;
+        start_cnt <= 23'd0;
         start     <= 1'b0;
-    end else if (start_cnt < 20'd500_000) begin
-        start_cnt <= start_cnt + 20'd1;
-        start     <= (start_cnt == 20'd499_999);   // 10ms 时拉高 1 拍
+    end else if (start_cnt < 23'd5_000_000) begin
+        start_cnt <= start_cnt + 23'd1;
+        start     <= (start_cnt == 23'd4_999_999);   // 100ms 时拉高 1 拍
     end else
         start <= 1'b0;
 end
@@ -210,8 +210,8 @@ line_buffer u_line_buffer (
     .valid      (lb_valid)
 );
 
-// ---- SD 卡驱动（50MHz，三段式：statemachine + sendmodule + recievmodule）----
-statemachine u_sd_stm (
+// ---- SD 卡驱动（教程第52章 sd_init + sd_read 适配层 sd_ctrl）----
+sd_ctrl u_sd_ctrl (
     .clk      (sys_clk),
     .rst_n    (rst_n_int),
     .sd_addr  (sd_addr),
@@ -219,10 +219,10 @@ statemachine u_sd_stm (
     .sd_data  (sd_data),
     .sd_valid (sd_valid),
     .sd_busy  (sd_busy),
+    .sd_miso  (sd_miso),
     .sd_cs    (sd_cs),
     .sd_clk   (sd_clk),
-    .sd_mosi  (sd_mosi),
-    .sd_miso  (sd_miso)
+    .sd_mosi  (sd_mosi)
 );
 
 // ---- SD → SDRAM 桥接（50MHz）----

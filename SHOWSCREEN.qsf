@@ -53,9 +53,9 @@ set_global_assignment -name QIP_FILE ipcores/FIFO30M50M/FIFO.qip
 set_global_assignment -name VERILOG_FILE src/top/SHOWSCREEN.v
 set_global_assignment -name VERILOG_FILE src/driver/lcd_driver.v
 set_global_assignment -name VERILOG_FILE src/driver/sramdriver.v
-set_global_assignment -name VERILOG_FILE src/driver/SDDRIVER/sendmodule.v
-set_global_assignment -name VERILOG_FILE src/driver/SDDRIVER/recievmodule.v
-set_global_assignment -name VERILOG_FILE src/driver/SDDRIVER/statemachine.v
+set_global_assignment -name VERILOG_FILE src/driver/SDDRIVER/sd_init.v
+set_global_assignment -name VERILOG_FILE src/driver/SDDRIVER/sd_read.v
+set_global_assignment -name VERILOG_FILE src/driver/SDDRIVER/sd_ctrl.v
 set_global_assignment -name VERILOG_FILE src/display/displayer.v
 set_global_assignment -name VERILOG_FILE src/datapath/transfer.v
 set_global_assignment -name VERILOG_FILE src/datapath/line_buffer.v
