@@ -28,9 +28,9 @@ wire in_image = pixel_valid &&
                 (pixel_x >= IMG_X0) && (pixel_x < IMG_X0 + IMG_W) &&
                 (pixel_y < IMG_H);
 
-// 行起始脉冲：图片区第 1 个像素的前 1 拍（pixel_x == IMG_X0-1）
-// 提前 1 拍发出，让 line_buffer 的行就绪标志在图片区首拍就生效
-assign line_start = pixel_valid && (pixel_x == (IMG_X0 - 1)) && (pixel_y < IMG_H);
+// 帧起始脉冲：第一行（pixel_y==0）图片区前 1 拍，用于 line_buffer 帧同步
+// 保证图片第 0 行正好显示在屏幕第一行，避免读阶段开始时 pixel_y 已跑偏导致错位
+assign line_start = pixel_valid && (pixel_x == (IMG_X0 - 1)) && (pixel_y == 9'd0);
 
 // 图片区内且数据有效才弹出（FIFO 的 rdreq）
 assign pop = in_image & valid;

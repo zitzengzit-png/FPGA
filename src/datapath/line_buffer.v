@@ -116,14 +116,16 @@ always @(posedge clk_50m or negedge rst_n) begin
     end
 end
 
-// ============ 30MHz 读侧（行就绪控制）============
+// ============ 30MHz 读侧（行就绪控制 + 帧同步）============
 reg        line_active;   // 当前行数据就绪，正在弹出
 reg [9:0]  pop_cnt;       // 当前行已弹出字数 0~719
+reg        frame_synced;  // 帧同步标志：已对齐到显示侧的 pixel_y=0
 
 always @(posedge clk_30m or negedge rst_n) begin
     if (!rst_n) begin
-        line_active <= 1'b0;
-        pop_cnt     <= 10'd0;
+        line_active  <= 1'b0;
+        pop_cnt      <= 10'd0;
+        frame_synced <= 1'b0;
     end
     else begin
         if (line_active) begin
@@ -138,13 +140,19 @@ always @(posedge clk_30m or negedge rst_n) begin
             end
         end
         else begin
-            // 行开始后持续等待 FIFO 攒满一整行再弹。
-            // 【修复】原来写成 if(line_start && rdusedw>=720)，line_start 只高 1 拍，
-            // 若该拍 FIFO 还没攒够 720 字，这一行就被跳过（黑边），导致画面逐帧
-            // 下移、滚动。改成只等 rdusedw>=720，行开始后任意时刻攒够就立即弹，
-            // 行不再被跳过。
-            if (rdusedw >= 11'd720)
-                line_active <= 1'b1;
+            if (frame_synced) begin
+                // 帧同步后：FIFO 攒满一整行就弹（不依赖行起始脉冲，避免跳行滚动）
+                if (rdusedw >= 11'd720)
+                    line_active <= 1'b1;
+            end
+            else begin
+                // 帧同步前：等帧起始（pixel_y=0 的行开始）且 FIFO 已攒满一整行，
+                // 保证图片第 0 行正好显示在屏幕第一行，解决「第一行不在第一行」。
+                if (line_start && rdusedw >= 11'd720) begin
+                    frame_synced <= 1'b1;
+                    line_active  <= 1'b1;
+                end
+            end
         end
     end
 end
