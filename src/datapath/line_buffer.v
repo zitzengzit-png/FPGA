@@ -13,7 +13,7 @@ module line_buffer (
 
     // ---- SDRAM 读接口（50MHz）----
     output reg  [20:0] sdr_addr,  // 读地址
-    output reg         sdr_rd,    // 读请求（突发8）
+    output wire        sdr_rd,    // 读请求（突发8，保持高直到 SDRAM 接受）
     input  wire [15:0] sdr_rdata, // 读数据
     input  wire        sdr_rvalid,// 读有效
     input  wire        sdr_busy,  // SDRAM 忙
@@ -27,7 +27,6 @@ module line_buffer (
 );
 
 localparam LINE_WORDS = 720;   // 每行像素数
-localparam BURSTS     = 90;    // 每行突发次数 = 720/8
 
 // ============ FIFO 端口线 ============
 // ---- 写侧（50MHz SDRAM 域）----
@@ -58,39 +57,51 @@ FIFO u_fifo (
 );
 
 // ============ 50MHz 写侧（SDRAM 读控制器）============
-reg [6:0]  burst_cnt;    // 当前行突发计数 0~89
 reg [9:0]  write_cnt;    // 当前行已收字数 0~719
 reg [20:0] line_base;    // 当前行在 SDRAM 的起始地址
+reg        rd_active;    // 读请求进行中（已发，等收满 8 字）
+reg [2:0]  rvalid_cnt;   // 当前突发已收字数 0~7
 
 // FIFO 留有 16 字余量时才发下一组突发（防溢出）
 wire fifo_room = (wrusedw <= 11'd2032);
 
+// sdr_rd 组合输出：读请求进行中且 SDRAM 空闲时保持高
+// 【修复】原设计 sdr_rd 为 1 拍脉冲，若 SDRAM 控制器恰有刷新请求(ref_req)，
+// 会优先刷新而漏掉读请求 → burst_cnt 多计、write_cnt 少收 → 写侧卡死、
+// FIFO 攒不满一行 → valid 恒 0 → 黑屏。改为保持高直到控制器接受。
+assign sdr_rd = rd_active && !sdr_busy;
+
 always @(posedge clk_50m or negedge rst_n) begin
     if (!rst_n) begin
-        burst_cnt <= 7'd0;
-        write_cnt <= 10'd0;
-        line_base <= 21'd0;
-        sdr_addr  <= 21'd0;
-        sdr_rd    <= 1'b0;
+        write_cnt  <= 10'd0;
+        line_base  <= 21'd0;
+        sdr_addr   <= 21'd0;
+        rd_active  <= 1'b0;
+        rvalid_cnt <= 3'd0;
     end
     else begin
-        sdr_rd <= 1'b0;
-
         if (en) begin
-            // 发突发读：SDRAM 空闲、FIFO 有空间、本行未读完
-            if (!sdr_busy && fifo_room && burst_cnt < BURSTS) begin
-                sdr_addr  <= line_base + (burst_cnt << 3);   // 8 字对齐
-                sdr_rd    <= 1'b1;
-                burst_cnt <= burst_cnt + 7'd1;
+            // 发突发读：SDRAM 空闲、FIFO 有空间、本行未读完、无进行中的读
+            if (!sdr_busy && fifo_room && write_cnt < LINE_WORDS && !rd_active) begin
+                sdr_addr   <= line_base + write_cnt;  // write_cnt 是 8 的倍数
+                rd_active  <= 1'b1;
+                rvalid_cnt <= 3'd0;
             end
 
             // 收数据计数（数据由 FIFO 的 wrreq=sdr_rvalid 自动写入）
             if (sdr_rvalid) begin
                 write_cnt <= write_cnt + 10'd1;
+                if (rvalid_cnt == 3'd7) begin
+                    // 收满 8 字，本突发完成
+                    rd_active  <= 1'b0;
+                    rvalid_cnt <= 3'd0;
+                end
+                else
+                    rvalid_cnt <= rvalid_cnt + 3'd1;
+
                 if (write_cnt == LINE_WORDS - 1) begin
                     // 一行 720 字收满，换下一行
                     write_cnt <= 10'd0;
-                    burst_cnt <= 7'd0;
                     // 480 行后回绕到 0（一帧 480 行）
                     if (line_base == 21'd479 * LINE_WORDS)
                         line_base <= 21'd0;
@@ -98,6 +109,9 @@ always @(posedge clk_50m or negedge rst_n) begin
                         line_base <= line_base + LINE_WORDS;
                 end
             end
+        end
+        else begin
+            rd_active <= 1'b0;
         end
     end
 end
