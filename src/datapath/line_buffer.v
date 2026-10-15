@@ -30,26 +30,31 @@ localparam LINE_WORDS = 720;   // 每行像素数
 localparam BURSTS     = 90;    // 每行突发次数 = 720/8
 
 // ============ FIFO 端口线 ============
-wire        wrfull;
-wire [10:0] wrusedw;
-wire [15:0] q;
-wire        rdempty;
-wire [10:0] rdusedw;
+// ---- 写侧（50MHz SDRAM 域）----
+wire        wrfull;    // 写满标志（未用；防溢出改用 wrusedw 判断）
+wire [10:0] wrusedw;   // 写侧已用字数：判断 fifo_room，防止 FIFO 写溢出
+// ---- 读侧（30MHz 显示域）----
+wire [15:0] q;         // 读出的像素数据（16bit RGB565）
+wire        rdempty;   // 读空标志（未用）
+wire [10:0] rdusedw;   // 读侧已用字数：判断整行 720 字是否就绪
 
 // ============ 双时钟 FIFO（IP 核，深度 2048 × 16bit）============
+// 写侧 50MHz、读侧 30MHz，实现跨时钟域隔离（SDRAM 域 → 显示域）
 FIFO u_fifo (
-    .data    (sdr_rdata),   // 写数据：SDRAM 读出的字
-    .wrclk   (clk_50m),
-    .wrreq   (sdr_rvalid),  // SDRAM 读有效即写入
-    .wrfull  (wrfull),
-    .wrusedw (wrusedw),
-    .wrempty (),
-    .rdclk   (clk_30m),
-    .rdreq   (pop),         // 读请求：显示弹出
-    .q       (q),
-    .rdempty (rdempty),
-    .rdfull  (),
-    .rdusedw (rdusedw)
+    // ---- 写侧（50MHz SDRAM 域）----
+    .data    (sdr_rdata),   // 写数据：SDRAM 读出的字（16bit）
+    .wrclk   (clk_50m),     // 写时钟：50MHz
+    .wrreq   (sdr_rvalid),  // 写请求：SDRAM 读有效即写入
+    .wrfull  (wrfull),      // 写满标志（深度 2048 满）
+    .wrusedw (wrusedw),     // 写侧已用字数（11bit，最大 2048）
+    .wrempty (),            // 写空标志：未连接
+    // ---- 读侧（30MHz 显示域）----
+    .rdclk   (clk_30m),     // 读时钟：30MHz
+    .rdreq   (pop),         // 读请求：显示侧弹出像素
+    .q       (q),           // 读出的数据（rdreq 后 1 拍生效，注意对齐）
+    .rdempty (rdempty),     // 读空标志（未用）
+    .rdfull  (),            // 读满标志：未连接
+    .rdusedw (rdusedw)      // 读侧已用字数（11bit，判断 rdusedw>=720 行就绪）
 );
 
 // ============ 50MHz 写侧（SDRAM 读控制器）============

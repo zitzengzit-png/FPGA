@@ -35,10 +35,10 @@ module statemachine (
 );
 
 // ============ SPI 参数 ============
-localparam SPI_DIV_SLOW = 128;   // 初始化：50MHz/128 ≈ 390kHz（<400kHz）
+localparam SPI_DIV_SLOW = 200;   // 初始化：50MHz/200 = 250kHz（官方 DIV_FREQ=200）
 localparam SPI_DIV_FAST = 8;     // 数据：50MHz/8 = 6.25MHz
-localparam R1_TIMEOUT   = 200;   // 等 R1 响应的超时字节数
-localparam PWR_CYCLES   = 640;   // 上电发 ≥74 个 SCK（原设计 80×8 拍）
+localparam R1_TIMEOUT   = 500;   // 等 R1 响应的超时字节数（250kHz 下 ≈16ms）
+localparam PWR_CYCLES   = 8000;  // 上电稳定等待 ≈20ms（官方 POWER_ON_NUM=5000@250kHz）
 
 // ============ SD 命令 ============
 localparam CMD0   = 6'h00;   // 复位
@@ -48,14 +48,18 @@ localparam ACMD41 = 6'h29;   // 初始化（SDHC 参数 0x40000000）
 localparam CMD58  = 6'h3A;   // 读 OCR
 localparam CMD17  = 6'h11;   // 读单块 512 字节
 
-// ============ 状态定义 ============
-localparam S_POWER_ON  = 4'd0;   // 上电 74+ 时钟
-localparam S_SEND_CMD  = 4'd1;   // 发命令（48 位）
-localparam S_GET_R1    = 4'd2;   // 收 R1 响应
-localparam S_INIT_DONE = 4'd3;   // 初始化完成（等读请求）
-localparam S_READ_CMD  = 4'd4;   // 发 CMD17
-localparam S_READ_WAIT = 4'd5;   // 等数据令牌 0xFE
-localparam S_READ_DATA = 4'd6;   // 读 512 字节
+// ============ 状态定义（7 个状态）============
+// 状态流转主线：
+//   上电 S_POWER_ON → 发命令 S_SEND_CMD ⇄ 收响应 S_GET_R1（反复完成初始化）
+//   → 空闲 S_INIT_DONE → 发 CMD17 S_READ_CMD → 等令牌 S_READ_WAIT
+//   → 读数据 S_READ_DATA → 回到 S_INIT_DONE（循环等待下一次读）
+localparam S_POWER_ON  = 4'd0;   // 上电：CS=高，给卡发 ≥74 个 SCK 完成内部上电
+localparam S_SEND_CMD  = 4'd1;   // 发命令：逐字节移出 6 字节命令帧（初始化用）
+localparam S_GET_R1    = 4'd2;   // 收响应：收 R1，按 init_step 推进初始化序列
+localparam S_INIT_DONE = 4'd3;   // 空闲：初始化完成，等上层读请求
+localparam S_READ_CMD  = 4'd4;   // 发命令：发 CMD17 读单块
+localparam S_READ_WAIT = 4'd5;   // 等令牌：跳过 R1/填充，等数据令牌 0xFE
+localparam S_READ_DATA = 4'd6;   // 读数据：连续收 512 字节并逐字节输出
 
 // ============ 内部寄存器/线 ============
 reg  [3:0]  state;       // 当前状态
@@ -68,7 +72,7 @@ reg  [31:0] arg_reg;     // 当前命令参数
 reg  [2:0]  init_step;   // 初始化步骤：0=CMD0 1=CMD8 2=CMD55 3=ACMD41 4=CMD58
 reg  [2:0]  byte_cnt;    // 命令字节计数 0~5
 reg  [9:0]  data_cnt;    // 数据字节计数 0~511
-reg  [9:0]  pwr_cnt;     // 上电 SCK 周期计数
+reg  [12:0]  pwr_cnt;    // 上电 SCK 周期计数（13 位可存 8191，够 PWR_CYCLES=8000）
 reg  [8:0]  resp_cnt;    // R1 超时字节计数（0~199）
 reg  [7:0]  tx_data;     // 待发送字节
 reg         tx_start;    // 发送启动脉冲
@@ -115,9 +119,9 @@ end
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n)
-        spi_clk <= 1'b0;
+        spi_clk <= 1'b1;                            // 复位后空闲高（CPOL=1，与官方一致）
     else
-        spi_clk <= (spi_div_cnt >= spi_div[7:1]);   // 半个周期高
+        spi_clk <= (spi_div_cnt < spi_div[7:1]);    // 前半周期高、后半周期低
 end
 
 assign sd_clk = spi_clk;
@@ -202,7 +206,13 @@ always @(posedge clk or negedge rst_n) begin
         sd_valid <= 1'b0;
 
         case (state)
-            // ---- 上电：CS 高，发 ≥74 个 SCK，然后发 CMD0 ----
+            // ============================================================
+            // S_POWER_ON：上电阶段
+            //   作用：CS 保持高电平（不选中卡），让自由运行的 SCK 持续
+            //        翻转，向卡发 ≥74 个时钟脉冲，使卡完成内部上电准备。
+            //   推进：pwr_cnt 每到一个 SCK 周期自增，计满 PWR_CYCLES 后
+            //        装载 CMD0、发出第一个命令字节，进入 S_SEND_CMD。
+            // ============================================================
             S_POWER_ON: begin
                 sd_cs <= 1'b1;
                 if (div_wrap) begin
@@ -218,7 +228,14 @@ always @(posedge clk or negedge rst_n) begin
                 end
             end
 
-            // ---- 发命令（初始化命令与 CMD17 共用）----
+            // ============================================================
+            // S_SEND_CMD（初始化命令）与 S_READ_CMD（CMD17）共用本段
+            //   作用：CS 拉低选中卡，把 6 字节命令帧按字节逐个交给
+            //        sendmodule 移出：{01,cmd} + arg[31:0] + CRC。
+            //   推进：tx_done 到来 → 发下一字节（byte_cnt 0→5）；发满 6
+            //        字节后向 recievmodule 发 rx_start，转入 S_GET_R1
+            //        （初始化）或 S_READ_WAIT（读数据）。
+            // ============================================================
             S_SEND_CMD, S_READ_CMD: begin
                 sd_cs <= 1'b0;
                 if (tx_done) begin
@@ -232,7 +249,17 @@ always @(posedge clk or negedge rst_n) begin
                 end
             end
 
-            // ---- 收 R1 响应，推进初始化步骤 ----
+            // ============================================================
+            // S_GET_R1：接收 R1 响应，推进初始化序列
+            //   作用：CS 保持低，用 recievmodule 收 1 个响应字节。
+            //   分支：
+            //     · 收到 0xFF（卡未响应）：resp_cnt 自增；连续收到 200 个
+            //       0xFF 仍无有效响应则判定超时，回 S_POWER_ON 重初始化。
+            //     · 收到有效 R1：按 init_step 依次推进
+            //       CMD0→CMD8→CMD55→ACMD41→CMD58；其中 ACMD41 若 idle
+            //       位置位则重发 CMD55+ACMD41；CMD58 完成后初始化结束
+            //       （切快时钟、busy 拉低）。
+            // ============================================================
             S_GET_R1: begin
                 sd_cs <= 1'b0;
                 if (rx_done) begin
@@ -309,7 +336,12 @@ always @(posedge clk or negedge rst_n) begin
                 end
             end
 
-            // ---- 初始化完成，等读请求 ----
+            // ============================================================
+            // S_INIT_DONE：初始化完成，空闲等待读请求
+            //   作用：CS 拉高、sd_busy 拉低，表示卡已就绪，等待上层。
+            //   推进：收到 sd_rd 脉冲 → 锁存扇区号 sd_addr 到 arg_reg、
+            //        装载 CMD17 首字节并发出，转入 S_READ_CMD。
+            // ============================================================
             S_INIT_DONE: begin
                 sd_cs <= 1'b1;
                 if (sd_rd) begin
@@ -324,7 +356,13 @@ always @(posedge clk or negedge rst_n) begin
                     sd_busy <= 1'b0;
             end
 
-            // ---- 等数据令牌 0xFE（R1/填充字节被跳过）----
+            // ============================================================
+            // S_READ_WAIT：等待数据令牌 0xFE
+            //   作用：CS 保持低，持续收字节。CMD17 后卡先回 1 字节 R1，
+            //        再回若干 0xFF 填充，最后回 0xFE 数据令牌。
+            //   推进：每收到一个字节就立即请求收下一个；一旦 rx_data
+            //        == 0xFE，清 data_cnt 并进入 S_READ_DATA。
+            // ============================================================
             S_READ_WAIT: begin
                 sd_cs <= 1'b0;
                 if (rx_done) begin
@@ -334,7 +372,13 @@ always @(posedge clk or negedge rst_n) begin
                 end
             end
 
-            // ---- 读 512 字节数据 ----
+            // ============================================================
+            // S_READ_DATA：接收 512 字节扇区数据
+            //   作用：CS 保持低，每收到 1 字节就送到 sd_data 并给 1 拍
+            //        sd_valid 脉冲，同时请求收下一字节。
+            //   推进：收满 512 字节（data_cnt==511）后不再请求，次态逻辑
+            //        自动回到 S_INIT_DONE，等待下一次读请求。
+            // ============================================================
             S_READ_DATA: begin
                 sd_cs <= 1'b0;
                 if (rx_done) begin
@@ -347,6 +391,10 @@ always @(posedge clk or negedge rst_n) begin
                 end
             end
 
+            // ============================================================
+            // default：非法状态兜底（正常流程不会进入）
+            //   拉高 CS、置忙，避免卡被误操作；次态逻辑会拉回 S_POWER_ON。
+            // ============================================================
             default: begin
                 sd_cs   <= 1'b1;
                 sd_busy <= 1'b1;

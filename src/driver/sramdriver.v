@@ -18,17 +18,17 @@ module sramdriver (
     output reg         rvalid,     // 读数据有效（8 拍脉冲）
     output wire        busy,       // 忙（初始化/读写/刷新中）
 
-    // ---- SDRAM 物理接口 ----
-    output wire        sdram_clk,
-    output wire        sdram_cke,
-    output wire        sdram_cs_n,
-    output wire        sdram_ras_n,
-    output wire        sdram_cas_n,
-    output wire        sdram_we_n,
-    output wire [1:0]  sdram_ba,
-    output wire [12:0] sdram_addr,
-    output wire [1:0]  sdram_dqm,
-    inout  wire [15:0] sdram_data
+    // ---- SDRAM 物理接口（W9825G6KH，128Mbit，16bit）----
+    output wire        sdram_clk,   // 时钟：直通 clk(50MHz)，命令/数据都同步到它
+    output wire        sdram_cke,   // 时钟使能：恒 1，时钟始终有效
+    output wire        sdram_cs_n,  // 片选（低有效）= cmd[3]
+    output wire        sdram_ras_n, // 行选通（低有效）= cmd[2]
+    output wire        sdram_cas_n, // 列选通（低有效）= cmd[1]
+    output wire        sdram_we_n,  // 写使能（低有效）= cmd[0]，与 RAS/CAS 组合成命令
+    output wire [1:0]  sdram_ba,    // Bank 地址：固定 2'b00，只用 bank0
+    output wire [12:0] sdram_addr,  // 行/列复用地址；ACTIVE 给行地址，读写给列地址(A10=1 自动预充电)
+    output wire [1:0]  sdram_dqm,   // 数据掩码：恒 2'b00，不掩码（高/低字节均有效）
+    inout  wire [15:0] sdram_data   // 双向数据总线：写时输出 wdata_reg，否则高阻
 );
 
 // ============ 参数（按 50MHz 时钟，20ns/周期）============
