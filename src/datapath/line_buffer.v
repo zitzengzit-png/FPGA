@@ -153,13 +153,15 @@ always @(posedge clk_30m or negedge rst_n) begin
         else begin
             if (frame_synced) begin
                 // 帧同步后：FIFO 攒满一整行就弹（不依赖行起始脉冲，避免跳行滚动）
-                if (rdusedw >= 11'd720)
+                // !clearing：清空 FIFO 期间不弹，避免把残留数据当图片显示
+                if (!clearing && rdusedw >= 11'd720)
                     line_active <= 1'b1;
             end
             else begin
                 // 帧同步前：等帧起始（pixel_y=0 的行开始）且 FIFO 已攒满一整行，
                 // 保证图片第 0 行正好显示在屏幕第一行，解决「第一行不在第一行」。
-                if (line_start && rdusedw >= 11'd720) begin
+                // !clearing：清空 FIFO 期间不帧同步，避免残留数据被误当作第 0 行
+                if (!clearing && line_start && rdusedw >= 11'd720) begin
                     frame_synced <= 1'b1;
                     line_active  <= 1'b1;
                 end
