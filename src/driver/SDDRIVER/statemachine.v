@@ -37,7 +37,7 @@ module statemachine (
 // ============ SPI 参数 ============
 localparam SPI_DIV_SLOW = 200;   // 初始化：50MHz/200 = 250kHz（官方 DIV_FREQ=200）
 localparam SPI_DIV_FAST = 8;     // 数据：50MHz/8 = 6.25MHz
-localparam R1_TIMEOUT   = 500;   // 等 R1 响应的超时字节数（250kHz 下 ≈16ms）
+localparam R1_TIMEOUT   = 25000; // 等 R1 响应的超时 SCK 周期数（250kHz 下 = 100ms，对齐官方）
 localparam PWR_CYCLES   = 8000;  // 上电稳定等待 ≈20ms（官方 POWER_ON_NUM=5000@250kHz）
 
 // ============ SD 命令 ============
@@ -73,7 +73,7 @@ reg  [2:0]  init_step;   // 初始化步骤：0=CMD0 1=CMD8 2=CMD55 3=ACMD41 4=C
 reg  [2:0]  byte_cnt;    // 命令字节计数 0~5
 reg  [9:0]  data_cnt;    // 数据字节计数 0~511
 reg  [12:0]  pwr_cnt;    // 上电 SCK 周期计数（13 位可存 8191，够 PWR_CYCLES=8000）
-reg  [8:0]  resp_cnt;    // R1 超时字节计数（0~199）
+reg  [15:0] resp_cnt;    // R1 超时 SCK 周期计数（16 位可存 65535，够 25000）
 reg  [7:0]  tx_data;     // 待发送字节
 reg         tx_start;    // 发送启动脉冲
 reg         rx_start;    // 接收启动脉冲
@@ -88,6 +88,8 @@ wire        tx_mosi;
 // ---- 分频参数与辅助信号 ----
 wire [7:0] spi_div  = slow_mode ? SPI_DIV_SLOW : SPI_DIV_FAST;
 wire       div_wrap = (spi_div_cnt == spi_div - 1'b1);
+// 收 R1 响应时用「检测 MISO 起始位」对齐字节边界（修复 NCR 延迟导致字节错位）
+wire       align_start = (state == S_GET_R1);
 wire [7:0] cmd_crc  = (cmd_reg == CMD0) ? 8'h95 :
                       (cmd_reg == CMD8) ? 8'h87 : 8'hFF;
 
@@ -148,17 +150,14 @@ always @(*) begin
 
         S_GET_R1: begin
             if (rx_done) begin
-                if (rx_data[7]) begin                  // 0xFF：卡未响应
-                    if (resp_cnt == R1_TIMEOUT - 1)
-                        next_state = S_POWER_ON;       // 超时重新初始化
-                end
-                else begin                             // 收到 R1
-                    if (init_step == 3'd4)
-                        next_state = S_INIT_DONE;      // CMD58 完成
-                    else
-                        next_state = S_SEND_CMD;       // 继续发下一条命令
-                end
+                // 收到 R1（recievmodule 已检测起始位，rx_data 就是 R1）
+                if (init_step == 3'd4)
+                    next_state = S_INIT_DONE;      // CMD58 完成
+                else
+                    next_state = S_SEND_CMD;       // 继续发下一条命令
             end
+            else if (resp_cnt == R1_TIMEOUT - 1)
+                next_state = S_POWER_ON;           // 超时重新初始化
         end
 
         S_INIT_DONE:
@@ -262,25 +261,14 @@ always @(posedge clk or negedge rst_n) begin
             // ============================================================
             S_GET_R1: begin
                 sd_cs <= 1'b0;
+                // 超时计时：每个 SCK 周期 +1（250kHz，25000 周期 = 100ms）
+                if (div_wrap)
+                    resp_cnt <= resp_cnt + 16'd1;
+
                 if (rx_done) begin
-                    if (rx_data[7]) begin          // 0xFF：卡未响应
-                        resp_cnt <= resp_cnt + 9'd1;
-                        if (resp_cnt == R1_TIMEOUT - 1) begin
-                            // 超时：回上电重新初始化
-                            resp_cnt  <= 9'd0;
-                            pwr_cnt   <= 10'd0;
-                            init_step <= 3'd0;
-                            cmd_reg   <= CMD0;
-                            arg_reg   <= 32'd0;
-                            slow_mode <= 1'b1;
-                            sd_cs     <= 1'b1;
-                        end
-                        else
-                            rx_start <= 1'b1;      // 继续收
-                    end
-                    else begin                     // 收到 R1
-                        resp_cnt <= 9'd0;
-                        case (init_step)
+                    // 收到 R1（recievmodule 已检测起始位，rx_data 就是 R1）
+                    resp_cnt <= 16'd0;
+                    case (init_step)
                             3'd0: begin            // CMD0 完成 → CMD8
                                 init_step <= 3'd1;
                                 cmd_reg   <= CMD8;
@@ -332,7 +320,16 @@ always @(posedge clk or negedge rst_n) begin
                                 sd_cs     <= 1'b1;
                             end
                         endcase
-                    end
+                end
+                else if (resp_cnt == R1_TIMEOUT - 1) begin
+                    // 超时：回上电重新初始化
+                    resp_cnt  <= 16'd0;
+                    pwr_cnt   <= 13'd0;
+                    init_step <= 3'd0;
+                    cmd_reg   <= CMD0;
+                    arg_reg   <= 32'd0;
+                    slow_mode <= 1'b1;
+                    sd_cs     <= 1'b1;
                 end
             end
 
@@ -419,8 +416,9 @@ recievmodule u_recv (
     .clk     (clk),
     .rst_n   (rst_n),
     .spi_clk (spi_clk),
-    .start   (rx_start),
-    .miso    (sd_miso),
+    .start       (rx_start),
+    .align_start (align_start),
+    .miso        (sd_miso),
     .data    (rx_data),
     .done    (rx_done),
     .busy    (rx_busy)
