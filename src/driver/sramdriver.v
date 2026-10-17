@@ -33,7 +33,12 @@ module sramdriver (
 
 // ============ 参数（按 50MHz 时钟，20ns/周期）============
 localparam INIT_WAIT_CNT = 10000;   // 上电等待 200us = 10000 时钟
-localparam REFRESH_CNT   = 781;     // 刷新间隔 15.6us = 781 时钟（64ms/4096 行，略留余量）
+// 刷新间隔（依据《新起点之FPGA开发指南》46.1.1 节）：
+//   本板 SDRAM = W9825G6KH：4 Bank × 8192 行（行地址 13 位，A0~A12）
+//                            × 512 列（列地址 9 位，A0~A8） × 16bit = 256Mbit = 32MB
+//   要求 64ms 内把 8192 行全部刷新一遍 → 刷新间隔 = 64ms/8192 = 7.8125us
+//   本设计 SDRAM 时钟 = 50MHz（20ns/周期）→ 7.8125us / 20ns = 390.6 → 取 390 拍
+localparam REFRESH_CNT   = 390;     // 刷新间隔 7.8125us = 390 拍（64ms/8192 行）
 localparam CL            = 2;       // CAS 延迟 = 2
 localparam MODE_REG      = 12'h223; // 模式寄存器：CL=2, 读突发=8, 写单字(A9=1), 顺序
 
@@ -95,6 +100,15 @@ assign sdram_data  = (state == S_WRITE) ? wdata_reg : 16'hZZZZ;
 assign busy = (state != S_IDLE);
 
 // 地址复用：ACTIVE 给行地址，READ/WRITE 给列地址（A10=1 自动预充电）
+// 说明（本设计的地址规划，与文档的 8192 行 × 512 列 器件规格配套）：
+//   器件按文档是 4 Bank × 8192 行 × 512 列 = 2^22 字/Bank；
+//   本设计的字地址是 21 位（2^21 字 = 4MB，够存 720×480×2B=691200B 的图片），
+//   因此取 bank0 里一个 2^21 字的子空间：
+//       row = a[20:9]（12 位行地址，A0~A11），col = a[8:0]（9 位列地址，A0~A8）
+//   写侧（transfer）和读侧（line_buffer）用的是同一套映射，地址一一对应，功能正确。
+//   A12 固定为 0 是该地址规划的自然结果（行号只用 0~4095），
+//   所以 Quartus 报的 "sdram_addr[12] Stuck at GND" 是预期行为，不是错误。
+//   若以后要把 21 位地址铺满 8192 行，可改为 row = a[20:8]（13 位）、col = a[7:0]。
 // 地址复用：ACTIVE 给行地址；READ 给 7 位列地址(突发4)，WRITE 给 9 位列地址(单字)
 assign sdram_addr = (state == S_ACTIVE) ? {1'b0, cur_addr[20:9]} :
                     (state == S_INIT_PRE) ? 13'b0010000000000 :
@@ -199,11 +213,17 @@ always @(posedge clk or negedge rst_n) begin
 
             // ---- 读：发读命令，等 CL 后连续采 8 个字（突发8）----
             S_READ: begin
-                if (delay_cnt >= CL + 2 && delay_cnt <= CL + 9) begin
+                // 【本次修复】采样窗口必须从 CL+1 开始：
+                //   读命令在 delay_cnt==0 这一拍发出，SDRAM 在 CL=2 拍后输出第一个字
+                //   （配合 1 拍的命令寄存，数据落在 delay_cnt==3 起的 8 拍上）。
+                //   原来从 CL+2 开始采 → 每组 8 个字采成 [w1..w7, 下一拍无效值]：
+                //   表现为图像每 8 像素错位 1 个点 + 每 8 像素 1 个串色点，
+                //   即「大面积颜色不对」。全链路仿真里能直接看到 8 个像素出现一次 zzzz。
+                if (delay_cnt >= CL + 1 && delay_cnt <= CL + 8) begin
                     rdata  <= sdram_data;   // 采样一个字
                     rvalid <= 1'b1;
                 end
-                if (delay_cnt == CL + 9) begin
+                if (delay_cnt == CL + 8) begin
                     state <= S_IDLE;        // 8 个字采完
                 end else
                     delay_cnt <= delay_cnt + 16'd1;

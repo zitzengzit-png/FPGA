@@ -170,6 +170,9 @@ always @(*) begin
                 else
                     next_state = st_idle;
             end
+            // 【新增】等 CMD8 响应超时 → 回 st_idle 重新初始化
+            else if(over_time_en)
+                next_state = st_idle;
             else
                 next_state = st_send_cmd8;
         end
@@ -180,6 +183,9 @@ always @(*) begin
                 else
                     next_state = st_send_cmd55;
             end
+            // 【新增】等 CMD55 响应超时 → 回 st_idle 重新初始化
+            else if(over_time_en)
+                next_state = st_idle;
             else
                 next_state = st_send_cmd55;
         end
@@ -190,6 +196,9 @@ always @(*) begin
                 else
                     next_state = st_send_cmd55;  // 初始化未完成，重新发起
             end
+            // 【新增】等 ACMD41 响应超时 → 回 st_idle 重新初始化
+            else if(over_time_en)
+                next_state = st_idle;
             else
                 next_state = st_send_acmd41;
         end
@@ -243,8 +252,22 @@ always @(posedge div_clk or negedge rst_n) begin
                 else begin
                     sd_mosi <= 1'b1;
                     if(res_en) begin
-                        sd_cs       <= 1'b1;
-                        cmd_bit_cnt <= 6'd0;
+                        sd_cs         <= 1'b1;
+                        cmd_bit_cnt   <= 6'd0;
+                        over_time_cnt <= 16'd0;
+                    end
+                    // 【新增】等 CMD8 响应超时：清位计数并回 st_idle 重新初始化。
+                    // 原版此处无超时，卡不响应时会永久停在 st_send_cmd8
+                    //（sd_cs 一直为 0、init_done 永不置位 → 顶层永久黑屏）
+                    else if(over_time_en) begin
+                        sd_cs         <= 1'b1;
+                        cmd_bit_cnt   <= 6'd0;
+                        over_time_cnt <= 16'd0;
+                    end
+                    else begin
+                        over_time_cnt <= over_time_cnt + 1'b1;
+                        if(over_time_cnt == OVER_TIME_NUM - 1'b1)
+                            over_time_en <= 1'b1;
                     end
                 end
             end
@@ -257,8 +280,20 @@ always @(posedge div_clk or negedge rst_n) begin
                 else begin
                     sd_mosi <= 1'b1;
                     if(res_en) begin
-                        sd_cs       <= 1'b1;
-                        cmd_bit_cnt <= 6'd0;
+                        sd_cs         <= 1'b1;
+                        cmd_bit_cnt   <= 6'd0;
+                        over_time_cnt <= 16'd0;
+                    end
+                    // 【新增】等 CMD55 响应超时 → 回 st_idle 重新初始化
+                    else if(over_time_en) begin
+                        sd_cs         <= 1'b1;
+                        cmd_bit_cnt   <= 6'd0;
+                        over_time_cnt <= 16'd0;
+                    end
+                    else begin
+                        over_time_cnt <= over_time_cnt + 1'b1;
+                        if(over_time_cnt == OVER_TIME_NUM - 1'b1)
+                            over_time_en <= 1'b1;
                     end
                 end
             end
@@ -271,8 +306,20 @@ always @(posedge div_clk or negedge rst_n) begin
                 else begin
                     sd_mosi <= 1'b1;
                     if(res_en) begin
-                        sd_cs       <= 1'b1;
-                        cmd_bit_cnt <= 6'd0;
+                        sd_cs         <= 1'b1;
+                        cmd_bit_cnt   <= 6'd0;
+                        over_time_cnt <= 16'd0;
+                    end
+                    // 【新增】等 ACMD41 响应超时 → 回 st_idle 重新初始化
+                    else if(over_time_en) begin
+                        sd_cs         <= 1'b1;
+                        cmd_bit_cnt   <= 6'd0;
+                        over_time_cnt <= 16'd0;
+                    end
+                    else begin
+                        over_time_cnt <= over_time_cnt + 1'b1;
+                        if(over_time_cnt == OVER_TIME_NUM - 1'b1)
+                            over_time_en <= 1'b1;
                     end
                 end
             end

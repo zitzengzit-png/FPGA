@@ -63,9 +63,14 @@ assign sd_clk  = init_done ? clk_180    : init_sd_clk;
 // ---- 忙：初始化中 或 读数据中 ----
 assign sd_busy = !init_done || rd_busy;
 
-// ---- 16→8 字节转换：先高字节后低字节（匹配 transfer 大端打包）----
+// ---- 16→8 字节转换：先低字节后高字节（本工程必须如此，勿改）----
+// 【实机结论】SD 卡里的图片 bin 是「低字节在前」（小端）：每个 RGB565 像素的
+//   两个字节在文件中先存低字节。而 transfer 会把「先到的字节」当作高字节
+//   打包成 {先到, 后到}。因此这里必须先输出低字节，打包后写进 SDRAM 的
+//   16bit 字才是 {高字节, 低字节} —— 颜色才正确。
+//   如果把顺序改成「先高字节」，整体颜色会反掉（曾经改过一版，实机偏色）。
 reg [7:0]  data_buf;   // 暂存低字节
-reg        hi_flag;    // 1=下一拍输出低字节
+reg        hi_flag;    // 1=本拍输出低字节
 reg        byte_valid;
 
 assign sd_data  = hi_flag ? data_buf : rd_val_data[15:8];
@@ -80,13 +85,13 @@ always @(posedge clk or negedge rst_n) begin
     else begin
         byte_valid <= 1'b0;
         if(rd_val_en) begin
-            // 收到 16 位：本拍输出高字节，锁存低字节
+            // 收到 16 位：锁存低字节，并让下一拍先送出低字节
             data_buf   <= rd_val_data[7:0];
             hi_flag    <= 1'b1;
             byte_valid <= 1'b1;
         end
         else if(hi_flag) begin
-            // 下一拍输出低字节
+            // 再送出高字节
             hi_flag    <= 1'b0;
             byte_valid <= 1'b1;
         end

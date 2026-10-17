@@ -49,7 +49,7 @@ set_global_assignment -name ERROR_CHECK_FREQUENCY_DIVISOR 1
 set_global_assignment -name EDA_SIMULATION_TOOL "ModelSim-Altera (VHDL)"
 set_global_assignment -name EDA_OUTPUT_DATA_FORMAT VHDL -section_id eda_simulation
 set_global_assignment -name QIP_FILE ipcores/pll30/pll30Mhz.qip
-set_global_assignment -name QIP_FILE ipcores/FIFO30M50M/FIFO.qip
+set_global_assignment -name QIP_FILE ipcores/ffifowith17/ffifo.qip
 set_global_assignment -name VERILOG_FILE src/top/SHOWSCREEN.v
 set_global_assignment -name VERILOG_FILE src/driver/lcd_driver.v
 set_global_assignment -name VERILOG_FILE src/driver/sramdriver.v
