@@ -78,26 +78,23 @@ reg         start;        // transfer 启动脉冲（单拍）
 // PLL 锁定 + 外部复位：两者都满足才释放内部复位
 // 【本次改进】复位时序：
 //   · 异步拉低：rst_raw_n = sys_rst_n & pll_locked
-//   · 同步释放：在 50MHz 域用 2 级同步器消除亚稳
+//   · 同步释放：50MHz 域计数展宽 ~256 拍后置 1（释放发生在 sys_clk 沿）
 //   · 展宽 ~256 拍（约 5us）：保证 30MHz 域与「不受 rst 控制的 dcfifo 指针相位」
 //     都有充足时间稳定（配合 line_buffer 的精确读空，复位后相位是确定的）
 wire rst_raw_n = sys_rst_n & pll_locked;
-reg  [1:0] rst_sync;
 reg  [7:0] rst_stretch;
 always @(posedge sys_clk or negedge rst_raw_n) begin
     if (!rst_raw_n) begin
-        rst_sync    <= 2'b00;
         rst_stretch <= 8'd0;
         rst_n_int   <= 1'b0;
     end
     else begin
-        rst_sync <= {rst_sync[0], 1'b1};          // 2 级同步
         if (rst_stretch != 8'hFF) begin
             rst_stretch <= rst_stretch + 8'd1;
             rst_n_int   <= 1'b0;                  // 展宽期间保持复位
         end
         else
-            rst_n_int   <= rst_sync[1];           // 展宽结束后同步释放
+            rst_n_int   <= 1'b1;                   // 展宽结束后释放
     end
 end
 
