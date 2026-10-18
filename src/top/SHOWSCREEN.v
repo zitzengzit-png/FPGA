@@ -127,7 +127,6 @@ end
 //              因为此时 SDRAM 里的图片是不完整的，继续写会把画面写花。
 // 图片传输完成（锁存）：看门狗与指示灯都要用它，先声明（ModelSim 对顺序比 Quartus 严格）
 reg transfer_done_latch;
-localparam SELF_TEST = 1'b1; // 0=正常显示；1=片上自检（屏幕显示绿/红误差图）
 localparam WDOG_MAX = 27'd100_000_000;   // 2s @50MHz
 reg [26:0] wdog_cnt;
 reg        wdog_fired;
@@ -141,7 +140,7 @@ always @(posedge sys_clk or negedge rst_n_int) begin
         wdog_cnt   <= 27'd0;             // 传输已完成，看门狗停止计时
         wdog_fired <= 1'b0;
     end
-    else if ((wdog_cnt < WDOG_MAX) && !SELF_TEST)
+    else if (wdog_cnt < WDOG_MAX)
         wdog_cnt   <= wdog_cnt + 27'd1;
     else
         wdog_fired <= 1'b1;              // 超时：终止写阶段，放出显示
@@ -154,80 +153,16 @@ always @(posedge sys_clk or negedge rst_n_int) begin
         transfer_active <= 1'b0;         // 正常完成 或 看门狗超时 → 进入显示阶段
 end
 
-// ============================================================
-// 可选：片上自检（SELF_TEST 已在上面声明，默认 0 不影响正常功能）
-//   FPGA 自己把「每个像素编码自己的(行,列)」的图案写进 SDRAM：
-//       字 = {行[5:0], 列[9:0]}   (行 0..479, 列 0..719, 按行连续存)
-//   然后走完全相同的 line_buffer → displayer → lcd_driver 通路显示，
-//   并在显示侧逐像素比对，把结果显示出来：
-//       绿 = 该像素数据正确；红 = 错误
-//   于是整屏就是一张误差图：全绿 = 数据通路完全正确；
-//   红点分布规律（每 8 像素一个/成片/整体偏移）直接暴露问题。
-//   做完把 SELF_TEST 改回 0 即恢复正常显示。
-// ============================================================
-reg        st_run;      // 1 = 正在写自检图案
-reg [18:0] st_pix;      // 已写点数 0..345599
-reg [9:0]  st_row, st_col;
-reg [20:0] st_addr;
-reg [2:0]  st_tick;
-wire [15:0] st_data_w = {st_row[5:0], st_col[9:0]};
-wire        st_wr     = SELF_TEST && st_run && (st_tick == 3'd7) && !sdr_busy;
-wire        blank_phase = SELF_TEST ? st_run : transfer_active;
-
-always @(posedge sys_clk or negedge rst_n_int) begin
-    if (!rst_n_int) begin
-        st_run  <= SELF_TEST;   // 自检模式下复位后自动开始写图案
-        st_pix  <= 19'd0;
-        st_row  <= 10'd0;
-        st_col  <= 10'd0;
-        st_addr <= 21'd0;
-        st_tick <= 3'd0;
-    end
-    else if (st_run) begin
-        st_tick <= st_tick + 3'd1;
-        // 每 8 拍照一次写请求；只有被 SDRAM 接受（!sdr_busy）才前进
-        if ((st_tick == 3'd7) && !sdr_busy) begin
-            st_pix  <= st_pix + 19'd1;
-            st_addr <= st_addr + 21'd1;
-            if (st_col == 10'd719) begin
-                st_col <= 10'd0;
-                if (st_row == 9'd479) st_run <= 1'b0;   // 整幅写完
-                else                  st_row <= st_row + 10'd1;
-            end
-            else
-                st_col <= st_col + 10'd1;
-        end
-    end
-end
-
 // ---- 仲裁：写阶段 transfer 驱动，读阶段 line_buffer 驱动 ----
-wire [20:0] sdr_addr_arb = SELF_TEST ? (st_run ? st_addr : sdr_addr)
-                                     : (transfer_active ? tr_sdr_addr : sdr_addr);
-wire        sdr_rd_arb   = SELF_TEST ? (st_run ? 1'b0 : sdr_rd)
-                                     : (transfer_active ? 1'b0 : sdr_rd);
-wire        sdr_wr_arb   = SELF_TEST ? st_wr
-                                     : (transfer_active ? tr_sdr_wr : 1'b0);
-wire [15:0] sdr_wdata_arb = SELF_TEST ? st_data_w : tr_sdr_wdata;
+wire [20:0] sdr_addr_arb  = transfer_active ? tr_sdr_addr : sdr_addr;
+wire        sdr_rd_arb    = transfer_active ? 1'b0 : sdr_rd;
+wire        sdr_wr_arb    = transfer_active ? tr_sdr_wr : 1'b0;
+wire [15:0] sdr_wdata_arb = tr_sdr_wdata;
 
 // ---- 加载期黑屏：传输图片期间不显示未初始化 RAM 的随机内容 ----
 // ---- 看门狗超时提示：显示纯红（RGB565 = F800），证明 LCD 通路正常、图片传输失败 ----
-// 自检比对：显示值 == {行[5:0], 列[9:0]} ? 绿 : 红
-wire [9:0]  img_x      = (pixel_x >= 10'd40) ? (pixel_x - 10'd40) : 10'd0;
-// 注意：pixel_data 比 LCD 上显示的像素早 1 拍（lcd_driver 是寄存输出），
-// 所以比对时要用「下一列」的期望值，否则每像素都会判成"列号不对"（全黄/全红）。
-wire [15:0] exp_word   = {pixel_y[5:0], (img_x + 10'd1)};
-wire        in_img_area = pixel_valid && (pixel_x >= 10'd40) &&
-                          (pixel_x < 10'd760) && (pixel_y < 9'd480);
-// 三级判定（便于区分"整体水平偏移"和"数据无效"）：
-//   绿 0x07E0 = 值完全等于 {本行, 本列}          → 完全正确
-//   黄 0xFFE0 = 行号对、列号错                   → 数据是真的，只是纯水平偏移
-//   红 0xF800 = 行号也不对（或值是 0/垃圾）      → 行错位或数据无效
-wire [15:0] map_pixel  = (pixel_data === exp_word)             ? 16'h07E0 :
-                         (pixel_data[15:10] === pixel_y[5:0]) ? 16'hFFE0 : 16'hF800;
 wire [15:0] pixel_data_dbg     = wdog_fired ? 16'hF800 : pixel_data;
-wire [15:0] pixel_data_sel = SELF_TEST ? (in_img_area ? map_pixel : 16'h0000)
-                                       : pixel_data_dbg;
-wire [15:0] pixel_data_blanked = blank_phase ? 16'h0000 : pixel_data_sel;
+wire [15:0] pixel_data_blanked = transfer_active ? 16'h0000 : pixel_data_dbg;
 
 // ---- 调试 LED：定位卡在哪一步 ----
 reg sdr_init_done;
@@ -344,7 +279,6 @@ line_buffer u_line_buffer (
     .sdr_rdata  (sdr_rdata),
     .sdr_rvalid (sdr_rvalid),
     .sdr_busy   (sdr_busy),
-    .en         (!blank_phase),
     // 显示接口
     .pop        (pop),
     .line_start (line_start),

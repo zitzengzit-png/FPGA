@@ -39,8 +39,17 @@ localparam INIT_WAIT_CNT = 10000;   // 上电等待 200us = 10000 时钟
 //   要求 64ms 内把 8192 行全部刷新一遍 → 刷新间隔 = 64ms/8192 = 7.8125us
 //   本设计 SDRAM 时钟 = 50MHz（20ns/周期）→ 7.8125us / 20ns = 390.6 → 取 390 拍
 localparam REFRESH_CNT   = 390;     // 刷新间隔 7.8125us = 390 拍（64ms/8192 行）
-localparam CL            = 2;       // CAS 延迟 = 2
-localparam MODE_REG      = 12'h223; // 模式寄存器：CL=2, 读突发=8, 写单字(A9=1), 顺序
+localparam CL            = 2;       // CAS 延迟 = 2（必须与 MODE_REG 的 A6:A4 一致）
+localparam RD_OFS        = 1;       // ★采样窗口起点偏移（0=CL+0, 1=CL+1, 2=CL+2...），窗口长度固定 8
+// W9825G6KH 模式寄存器位域：
+//   A9      = 1      ：写突发模式 = 单字写
+//   A6:A4   = 3'b010 ：CAS latency = 2
+//   A3      = 0      ：顺序突发
+//   A2:A0   = 3'b011 ：读突发长度 = 8
+//   ⇒ 12'b0010_0010_0011 = 12'h223
+// 【注意】0x232 是错误写法：它等于 A6:A4=011(CL=3) + A2:A0=010(BL=4)，
+//         与控制器按 CL=2 / BL=8 的采样完全不一致，会造成读数据整体错位。
+localparam MODE_REG      = 12'h223; // 单字写 + CL2 + 顺序 + 读突发8
 
 // ============ SDRAM 命令编码 ============
 localparam CMD_NOP = 4'b1111;   // 空操作（CS 拉高，芯片不选中）
@@ -96,8 +105,14 @@ assign sdram_ba    = 2'b00;                             // 固定 bank0
 assign sdram_dqm   = 2'b00;                             // 不掩码
 assign sdram_data  = (state == S_WRITE) ? wdata_reg : 16'hZZZZ;
 
-// 忙：不在空闲态就是忙（初始化/读写/刷新）
-assign busy = (state != S_IDLE);
+// 忙：不在空闲态、或最后一个读数据拍仍有效时都算忙。
+// 【修复】原写法 busy = (state != S_IDLE) 会在第 8 个 rvalid 的那一拍
+//         提前变 0：此时 line_buffer 的 rd_active 还没清 0，
+//         sdr_rd = rd_active && !busy 会误发下一次读请求，
+//         使同一个突发被读两次（数据流变成 0..7,0..7,16..），
+//         行缓冲的 720 字边界随之错位，表现为“上一行内容跑到下一行”。
+//         把 rvalid 并入 busy 后，最后一个数据拍期间不会发新请求。
+assign busy = (state != S_IDLE) || rvalid;
 
 // 地址复用：ACTIVE 给行地址，READ/WRITE 给列地址（A10=1 自动预充电）
 // 说明（本设计的地址规划，与文档的 8192 行 × 512 列 器件规格配套）：
@@ -219,11 +234,11 @@ always @(posedge clk or negedge rst_n) begin
                 //   原来从 CL+2 开始采 → 每组 8 个字采成 [w1..w7, 下一拍无效值]：
                 //   表现为图像每 8 像素错位 1 个点 + 每 8 像素 1 个串色点，
                 //   即「大面积颜色不对」。全链路仿真里能直接看到 8 个像素出现一次 zzzz。
-                if (delay_cnt >= CL + 1 && delay_cnt <= CL + 8) begin
+                if (delay_cnt >= CL + RD_OFS && delay_cnt <= CL + RD_OFS + 7) begin
                     rdata  <= sdram_data;   // 采样一个字
                     rvalid <= 1'b1;
                 end
-                if (delay_cnt == CL + 8) begin
+                if (delay_cnt == CL + RD_OFS + 7) begin
                     state <= S_IDLE;        // 8 个字采完
                 end else
                     delay_cnt <= delay_cnt + 16'd1;
